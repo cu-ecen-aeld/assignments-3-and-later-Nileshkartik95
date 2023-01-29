@@ -46,9 +46,9 @@
 /*********************************Function starts here***************************/
 int main(int argc, char *argv[])
 {
-	int fd_val = SNV_INT; 										/*variable to store file descriptor value*/						
-	int wr_len = SNV_INT;										/*Variable to store write bytes length return value*/
-	int buffer_len = SNV_INT;									/*Variable to calculate the string length of the data to be writen 2nd CLI args*/
+	int fd_val; 										/*variable to store file descriptor value*/						
+	ssize_t wr_len;										/*Variable to store write bytes length return value*/
+	ssize_t buffer_len;									/*Variable to calculate the string length of the data to be writen 2nd CLI args*/
 	
 	openlog(NULL, 0 , LOG_USER);									/*open connection for sys logging, ident is NULL to use this Program for the user level messages*/
 		
