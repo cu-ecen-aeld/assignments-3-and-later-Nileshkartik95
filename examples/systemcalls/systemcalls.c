@@ -1,4 +1,17 @@
 #include "systemcalls.h"
+#include "stdlib.h"
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <string.h>
+#include <libgen.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+
 
 /**
  * @param cmd the command to execute with system()
@@ -10,12 +23,16 @@
 bool do_system(const char *cmd)
 {
 
-/*
- * TODO  add your code here
- *  Call the system() function with the command set in the cmd
- *   and return a boolean true if the system() call completed with success
- *   or false() if it returned a failure
-*/
+    /*
+     * TODO  add your code here
+     *  Call the system() function with the command set in the cmd
+     *   and return a boolean true if the system() call completed with success
+     *   or false() if it returned a failure
+    */
+    if((cmd == NULL) || (system(cmd) != 0))
+    {
+        return false;
+    }
 
     return true;
 }
@@ -37,6 +54,8 @@ bool do_system(const char *cmd)
 bool do_exec(int count, ...)
 {
     va_list args;
+    pid_t pid;
+    int status;
     va_start(args, count);
     char * command[count+1];
     int i;
@@ -49,18 +68,47 @@ bool do_exec(int count, ...)
     // and may be removed
     command[count] = command[count];
 
-/*
- * TODO:
- *   Execute a system command by calling fork, execv(),
- *   and wait instead of system (see LSP page 161).
- *   Use the command[0] as the full path to the command to execute
- *   (first argument to execv), and use the remaining arguments
- *   as second argument to the execv() command.
- *
-*/
+
+    /*
+     * TODO:
+     *   Execute a system command by calling fork, execv(),
+     *   and wait instead of system (see LSP page 161).
+     *   Use the command[0] as the full path to the command to execute
+     *   (first argument to execv), and use the remaining arguments
+     *   as second argument to the execv() command.
+     *
+    */
+    //char *dummy = dirname(command[0]);
+    //const char *mydir="/bin";
+
+    pid = fork();
+    if(pid == -1)
+    {
+        return false;
+    }
+
+    if(pid == 0)
+    {
+        if( (execv(command[0],command)) == -1)
+        {
+            perror("execv");
+            exit(1);
+
+        }
+    }
+    else
+    {
+        do
+        {
+            if (waitpid (pid, &status, 0) == -1)
+                return false;
+            if(WEXITSTATUS(status)!= 0)
+                return false;
+        }
+        while(!WIFEXITED (status));
+    }
 
     va_end(args);
-
     return true;
 }
 
@@ -75,6 +123,7 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     va_start(args, count);
     char * command[count+1];
     int i;
+    int status;
     for(i=0; i<count; i++)
     {
         command[i] = va_arg(args, char *);
@@ -85,13 +134,55 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     command[count] = command[count];
 
 
-/*
- * TODO
- *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
- *   redirect standard out to a file specified by outputfile.
- *   The rest of the behaviour is same as do_exec()
- *
-*/
+    /*
+     * TODO
+     *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
+     *   redirect standard out to a file specified by outputfile.
+     *   The rest of the behaviour is same as do_exec()
+     *
+    */
+
+    int pid;
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0777);
+    if (fd < 0)
+    {
+        perror("open");
+        abort();
+    }
+
+    if (dup2(fd, 1) < 0)
+    {
+        perror("dup2");
+        abort();
+    }
+    close(fd);
+
+    pid = fork();
+    if(pid == -1)
+    {
+        return false;
+    }
+
+    if(pid == 0)
+    {
+        if( (execv(command[0],command)) == -1)
+        {
+            perror("execv");
+            exit(1);
+
+        }
+    }
+    else
+    {
+        do
+        {
+            if (waitpid (pid, &status, 0) == -1)
+                return false;
+            if(WEXITSTATUS(status)!= 0)
+                return false;
+        }
+        while(!WIFEXITED (status));
+    }
 
     va_end(args);
 
