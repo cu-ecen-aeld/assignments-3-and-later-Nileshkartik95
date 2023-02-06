@@ -36,22 +36,22 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
 
 	
     # TODO: Add your kernel build steps here
-	echo "starting the build procedure"
-	echo "Cleaning the source tree"
-        make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper		#cleans the source tree
-        echo "Build the default configuration"
-        make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig		#generates a default configuration file for build
-        echo "Build the Kernel Image in multiple core"
-        make -j7 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all            	#use multiple CPU to build
-        echo "Build the module"
-        make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules		#builds module
-        echo "Build the Device Tree"
-        make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs 		#builds device tree
-        echo "Completing the build procedure"
+    echo "starting the build procedure"
+    echo "Cleaning the source tree"
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper	#cleans the source tree
+    echo "Build the default configuration"
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig	#generates a default configuration file for build
+    echo "Build the Kernel Image in multiple core"
+    make -j7 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all       	#use multiple CPU to build
+    echo "Build the module"
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules		#builds module
+    echo "Build the Device Tree"
+    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs 		#builds device tree
+    echo "Completing the build procedure"
 fi
 
 echo "Adding the Image in outdir"	
-cp /tmp/aeld/linux-stable/arch/arm64/boot/Image ${OUTDIR}
+cp ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ${OUTDIR}
 
 
 echo "Creating the staging directory for the root filesystem"
