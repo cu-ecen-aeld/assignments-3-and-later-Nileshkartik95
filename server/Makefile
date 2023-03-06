@@ -1,6 +1,6 @@
-CC=$(CROSS_COMPILE)gcc				#by default compiler is gcc is specified aarch64-none-linux-gnu gcc will be appended at the end
-CFLAGS=-Wall -Werror -Wextra 				#variable to hold the various flag for cross compiling
-LDFLAGS=-lpthread -lrt
+CC?=$(CROSS_COMPILE)gcc				#by default compiler is gcc is specified aarch64-none-linux-gnu gcc will be appended at the end
+CFLAGS?=-g -Wall -Werror -Wextra 				#variable to hold the various flag for cross compiling
+LDFLAGS?=-pthread -lrt
 
 .PHONY: all
 all: aesdsocket
