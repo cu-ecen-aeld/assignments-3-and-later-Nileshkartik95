@@ -18,6 +18,8 @@
 */
 
 /************************************include files***************************/
+
+
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -32,43 +34,56 @@
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <sys/queue.h>
+#include <pthread.h>
 
-#define BACKLOG                 (10)                        /* how many pending connections queue will hold*/
-#define MAXDATASIZE             (100)                       /* max buffer size*/
-#define SOCK_FILE_WRITE         ("/var/tmp/aesdsocketdata") /* temp file to write aesd socket data*/
+#define BACKLOG (3)
+#define MAXDATASIZE (1024)
+#define SOCK_FILE_WRITE ("/var/tmp/aesdsocketdata")
+#define TIMESTAMP_SIZE (128)
 
 
 /***********************************Global Variable***************************/
-char *malloc_wr_buffer = NULL;
+SLIST_HEAD(client_list_head_t, client_node_s);
+struct client_list_head_t client_list_head;
+
 int fd_wr_file;
 int fd_soc_server;
-char *malloc_buffer = NULL;
-int close_cli = 0;
-int malloc_buffer_size = 0;
+bool st_kill_thread = false;
+pthread_mutex_t lock;
+
+struct client_node_s
+{
+    int fd;
+    struct sockaddr_in addr;
+    socklen_t addr_len;
+    pthread_t thread_id;
+    char* malloc_wr_buffer;
+    SLIST_ENTRY(client_node_s) entries;
+};
+
 /*****************************Function declaration****************************/
+void *thread_new_connection(void *client_data);
+int read_datasocket_strlocalbuf(int fd_soc_client, char **malloc_wr_buffer, int *malloc_buffer_len);
+int file_read(int fd_wr_file, char **malloc_wr_buffer, int *malloc_buffer_len);
 void cleanup_on_exit();
 void sig_handler();
-int read_datasocket_strlocalbuf(int file_desc, char *buffer, int buff_len);
+void * log_timestamp_write();
 
 /*****************************Function definition******************************/
-
-int main(int argc, char* argv[])
+int main(int argc, char **argv)
 {
     int fd_soc_client;
     struct addrinfo hints;
     struct addrinfo *res;
-    char buf[MAXDATASIZE];
     struct sockaddr_in ip4addr;
     socklen_t addr_size;
-    int ret_val = 0;
-    char client_addr[INET_ADDRSTRLEN];
     int opt_val = 1;
+    int ret_status = 0;
     int deamon_enabled = 0;
-    int recv_bytes = 0;
-    int buffer_size = 0;
 
-    openlog(NULL, LOG_CONS | LOG_PID | LOG_PERROR , LOG_USER);									/*open connection for sys logging, ident is NULL to use this Program for the user level messages*/
-
+    openlog(NULL, LOG_CONS | LOG_PID | LOG_PERROR, LOG_USER);									/*open connection for sys logging, ident is NULL to use this Program for the user level messages*/
+    
     if((signal(SIGINT, sig_handler) == SIG_ERR) || (signal(SIGTERM, sig_handler) == SIG_ERR))
     {
         syslog(LOG_ERR," Signal handler error");
@@ -127,13 +142,13 @@ int main(int argc, char* argv[])
         return (EXIT_FAILURE);
     }
 
-    /*manipulating set option*/
-    if(setsockopt(fd_soc_server, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt_val, sizeof(int)) == -1)
+    // Set socket options for reusing address and port
+    if (setsockopt(fd_soc_server, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt_val, sizeof(int)))
     {
-        perror("set socket opt failed");
-        syslog(LOG_ERR,"set socket opt failed");
+        printf("Error: %s : Failed to set socket options\n", strerror(errno));
+        syslog(LOG_ERR, "Error: %s : Failed to set socket options\n", strerror(errno));
         cleanup_on_exit();
-        return (EXIT_FAILURE);
+        return -1;
     }
 
     /*binding the Socket port*/
@@ -166,181 +181,318 @@ int main(int argc, char* argv[])
         cleanup_on_exit();
         exit(EXIT_FAILURE);
     }
-    memset(&ip4addr, 0, sizeof(struct sockaddr_in));
-    memset(&addr_size, 0, sizeof(socklen_t));
-    /*super loop to poll on the data received from client*/
-    while (1)
+    memset(&ip4addr, 0, sizeof(ip4addr));
+    memset(&addr_size, 0, sizeof(addr_size));
+
+    struct client_node_s *client_node;
+    SLIST_INIT(&client_list_head);
+    if (pthread_mutex_init(&lock, NULL) != 0)
     {
+        syslog(LOG_ERR,"Mutex init failed");
+        cleanup_on_exit();
+        return -1;
+    }
+    pthread_t time_thread;
+    pthread_create(&time_thread, NULL, log_timestamp_write, NULL);
+
+
+    /*super loop to poll on the data received from client*/
+    while (1) 
+    {
+        // Accept the incoming connection
         if((fd_soc_client = accept(fd_soc_server, (struct sockaddr *)&ip4addr, &addr_size)) < 0)
         {
             syslog(LOG_ERR, "Failed to accept connection on socket");
             cleanup_on_exit();
             return (EXIT_FAILURE);
         }
-
-        /*Converting IP address to string format*/
-        if(NULL == inet_ntop(AF_INET, &ip4addr.sin_addr, client_addr, sizeof(client_addr)))
+        else
         {
-            syslog(LOG_ERR, "Failed to convert IPv4 address to string");
-            cleanup_on_exit();
-            return (EXIT_FAILURE);
-        }
-        syslog(LOG_INFO, "Accepted connection from %s", client_addr);           /*print the accepted client IPv4 Address*/
+            /*store  element buffer and  address len for each thread*/
+            client_node = malloc(sizeof(struct client_node_s));
+            client_node->addr_len = addr_size;
+            client_node->malloc_wr_buffer = NULL;
+            client_node->fd = fd_soc_client;
+            client_node->addr = ip4addr;
+            /*linked list for insertion at the begining of head node*/
+            SLIST_INSERT_HEAD(&client_list_head, client_node, entries);
 
-        while(1)
-        {
-            while(1)
+            /*create new thread*/
+            if (pthread_create(&client_node->thread_id, NULL, thread_new_connection, (void*)client_node) < 0)
             {
-                if((buffer_size = recv(fd_soc_client, buf, MAXDATASIZE, 0)) <= 0 )
-                {
-                    syslog(LOG_ERR, "Failed to receive data from socket");
-                    close(fd_soc_client);
-                    break;
-                }
-
-                if((ret_val = read_datasocket_strlocalbuf(fd_wr_file, buf, buffer_size)) == -1)
-                {
-                    close(fd_soc_client);               /*if read failed*/
-                    break;
-                }
-
-                if (ret_val > 0)
-                {
-                    recv_bytes += ret_val;
-                    break;
-                }
-            }
-
-            if (malloc_wr_buffer != NULL)
-            {
-                free(malloc_wr_buffer);
-            }
-
-            if((malloc_wr_buffer = (char *)malloc(sizeof(char) * recv_bytes)) == NULL)
-            {
-                syslog(LOG_ERR, "Malloc Failure");
-                cleanup_on_exit();
-                return (EXIT_FAILURE);
-            }
-
-            lseek(fd_wr_file, 0, SEEK_SET);
-
-            if(((ret_val = read(fd_wr_file, malloc_wr_buffer, recv_bytes))== -1) || (ret_val != recv_bytes))
-            {
-                close(fd_soc_client);
-                syslog(LOG_INFO, "Read Failure: closing connection from %s", client_addr);
-                break;
+                syslog(LOG_ERR, "Thread Creation failed");
+                SLIST_REMOVE(&client_list_head, client_node, client_node_s, entries);
+                close(client_node->fd);
+                free(client_node);
             }
             else
             {
-                syslog(LOG_INFO, "Read %d bytes from the file%s", ret_val, client_addr);
-            }
 
-            if((buffer_size = write(fd_soc_client, malloc_wr_buffer, recv_bytes)) == recv_bytes)
-            {
-                syslog(LOG_INFO, "Write Complete to client");
-            }
-            else
-            {
-                close(fd_soc_client);
-                syslog(LOG_INFO, "Error sending data to client");
-                break;
+                pthread_join(client_node->thread_id, NULL);
             }
         }
     }
-    cleanup_on_exit();
-    return 0;
 
+    cleanup_on_exit();
+    return ret_status;
 }
 
+void * log_timestamp_write()
+{
+    time_t curr_time;
+    struct tm * curr_localtime_info;
+    char timestamp[TIMESTAMP_SIZE];
+
+    sleep(10);              /*sleep for 10 sec and allow preemption*/
+
+    while (!st_kill_thread)
+    {
+        time(&curr_time);
+        curr_localtime_info = localtime(&curr_time);
+        strftime(timestamp, sizeof(timestamp), "timestamp:%a, %d %b %Y %T %z\n", curr_localtime_info);
+
+        pthread_mutex_lock(&lock);
+        lseek(fd_wr_file, 0, SEEK_END);
+        write(fd_wr_file, timestamp, strlen(timestamp));
+        pthread_mutex_unlock(&lock);
+
+        sleep(10);  /*sleep for 10 secand allow preemption*/
+    }
+    return NULL;
+}
+
+void *thread_new_connection(void *client_data)
+{
+    struct client_node_s *client_node = (struct client_node_s*) client_data;
+    int malloc_buffer_len = 0;
+    int ret_status;
+    int count_byte = 0;
+    char char_data;
+    int ret_status_retval = 0;
+
+    char ip4addr_str[INET_ADDRSTRLEN];
+
+  
+        /*Converting IP address to string format*/
+    if(NULL == inet_ntop(AF_INET, &client_node->addr.sin_addr, ip4addr_str, sizeof(ip4addr_str)))
+    {
+            syslog(LOG_ERR, "Failed to convert IPv4 address to string");
+            cleanup_on_exit();
+            return NULL;
+    }
+
+    syslog(LOG_INFO, "Accepted connection from %s", ip4addr_str);
+
+    while (1) 
+    {
+        while (1)
+        {
+            
+            if((ret_status = read_datasocket_strlocalbuf(client_node->fd, &client_node->malloc_wr_buffer, &malloc_buffer_len)) == 0)
+            {
+                syslog(LOG_ERR, "Failed to receive data from socket");
+                close(client_node->fd);
+                break;
+            }
+            
+            /*in case of the read failure free the memory and cleint node fd*/
+            if (ret_status < 0)
+            {
+                free(client_node->malloc_wr_buffer);
+                client_node->malloc_wr_buffer = NULL;
+                close(client_node->fd);
+                syslog(LOG_INFO, "Closed connection from %s", ip4addr_str);
+                return NULL;
+            }
+            pthread_mutex_lock(&lock);
+            /*in case of write failure close the fd connection for the client and free the memory */
+            if ((ret_status = write(fd_wr_file, client_node->malloc_wr_buffer, malloc_buffer_len)) < 0)
+            {
+                free(client_node->malloc_wr_buffer);
+                client_node->malloc_wr_buffer = NULL;
+                close(client_node->fd);
+                syslog(LOG_INFO, "Closed connection from %s", ip4addr_str);
+                pthread_mutex_unlock(&lock);
+                return NULL;
+            }
+            pthread_mutex_unlock(&lock);
+            break;
+        }
+
+        lseek(fd_wr_file, 0, SEEK_SET);
+        /*traverse to find the total characters using coutn byte*/
+        while(read(fd_wr_file, &char_data,1) > 0)
+        {
+            count_byte++;
+        }
+        if (count_byte <= 0)
+        {
+            ret_status = -1;
+        }
+            
+        /*allocate the size for the malloced write buffer*/
+        if (client_node->malloc_wr_buffer == NULL)
+        {
+            client_node->malloc_wr_buffer = (char *)malloc(sizeof(char) * count_byte);
+        }
+        else
+        {
+            client_node->malloc_wr_buffer = (char *)realloc(client_node->malloc_wr_buffer, count_byte);
+        }
+            /*
+
+        if (client_node->malloc_wr_buffer == NULL)
+        {}
+            ret_status = -1;*/
+
+
+        lseek(fd_wr_file, 0, SEEK_SET);
+
+        pthread_mutex_lock(&lock);
+        int ret_status = read(fd_wr_file, client_node->malloc_wr_buffer, count_byte);
+        pthread_mutex_unlock(&lock);
+
+        if (ret_status == -1)
+        {
+            syslog(LOG_ERR, " Error while reading data from the file");
+            ret_status_retval =  -1;
+        }
+        else
+        {
+            malloc_buffer_len = count_byte;
+            ret_status_retval =  0;
+        }
+
+        if (ret_status_retval < 0)
+        {
+            printf("Error while reading from the file\n");
+            free(client_node->malloc_wr_buffer);
+            client_node->malloc_wr_buffer = NULL;
+            close(client_node->fd);
+            syslog(LOG_INFO, "Closed connection from client");
+            return NULL;
+        }
+
+        ret_status = write(client_node->fd, client_node->malloc_wr_buffer, malloc_buffer_len);
+
+        if (ret_status < 0)
+        {
+            syslog(LOG_ERR, "writing failure to the client");
+            free(client_node->malloc_wr_buffer);
+            client_node->malloc_wr_buffer = NULL;
+            close(client_node->fd);
+            syslog(LOG_INFO, "Closed connection from client");
+            return NULL;
+        }
+
+        syslog(LOG_INFO, "Sent all packets to the client\n");
+
+        if(client_node->malloc_wr_buffer)
+            free(client_node->malloc_wr_buffer);
+
+        client_node->malloc_wr_buffer = NULL;
+
+        malloc_buffer_len = 0;
+    }
+}
 
 
 void sig_handler()
 {
+    st_kill_thread = 1;
     syslog(LOG_INFO,"SIGINT/ SIGTERM encountered: exiting the process...");
     cleanup_on_exit();
     exit(EXIT_SUCCESS);
 }
 
-
 void cleanup_on_exit()
 {
-
     close(fd_wr_file);
     close(fd_soc_server);
 
-    if(malloc_wr_buffer != NULL)
+    struct client_node_s *client_node;
+
+    SLIST_FOREACH(client_node, &client_list_head, entries)
     {
-        free(malloc_wr_buffer);
+        if (client_node->malloc_wr_buffer)
+            free(client_node->malloc_wr_buffer);
     }
 
-    if(remove(SOCK_FILE_WRITE) == -1)
+    while (!SLIST_EMPTY(&client_list_head))    
     {
-        syslog(LOG_ERR,"Socket file removal failed");
+        client_node = SLIST_FIRST(&client_list_head);
+        SLIST_REMOVE_HEAD(&client_list_head, entries);
+        free(client_node);
     }
 
+    SLIST_INIT(&client_list_head);
+
+    pthread_mutex_destroy(&lock);
+
+    remove(SOCK_FILE_WRITE);
+
+    closelog();
 }
 
-int read_datasocket_strlocalbuf(int file_desc, char *buffer, int buff_len)
+
+
+int read_datasocket_strlocalbuf(int fd_soc_client, char **malloc_buffer, int *malloc_buffer_size)
 {
+    int packet_size;
+    char buffer[MAXDATASIZE];
+    int buffer_len = 0;
+    int new_linefound = 0;
 
-    int new_line_found = 0;
+    if ((buffer_len = recv(fd_soc_client, buffer, MAXDATASIZE, 0)) <= 0)
+    {
+        return -1;
+    }
+
     int index = 0;
-    int packet_size = 0;
-    int wr_buffer_len = 0;
-
     /*traversing to find the end of buffer or new line*/
-    while(index < buff_len && buffer[index] != '\n')
+    while(index < buffer_len && buffer[index] != '\n')
     {
         index++;
     }
 
-    if(index == buff_len)
+    if(index == buffer_len)
     {
-        packet_size = buff_len;         /*Check if there was no new line in the received buffer from socket*/
+        packet_size = buffer_len;         /*Check if there was no new line in the received buffer from socket*/
     }
     else
     {
-        new_line_found = 1;
+        new_linefound = 1;
         packet_size = index + 1;        /*If a new line is found assign value of the index to packet_size*/
     }
 
     /*Initially mallox Buffer size is NULL perform malloc with size as packet_size*/
-    if (malloc_buffer == NULL)
+    if (*malloc_buffer == NULL)
     {
-        if((malloc_buffer = (char *)malloc(sizeof(char) * packet_size)) == NULL)
+        if((*malloc_buffer = (char *)malloc(sizeof(char) * packet_size)) == NULL)
         {
             cleanup_on_exit();
             exit (EXIT_FAILURE);
         }
         /*perform memcopy to copy the socket recieved data to the malloced buffer*/
-        memcpy(malloc_buffer + malloc_buffer_size, buffer, packet_size);
-        malloc_buffer_size += packet_size;                                  /*update the malloced buffer size to point*/
+        memcpy(*malloc_buffer + *malloc_buffer_size, buffer, packet_size);
+        *malloc_buffer_size += packet_size;                                  /*update the malloced buffer size to point*/
     }
     else
     {
         /*realloc if the buffer was already malloced to add stream of byte in to the malloced buffer*/
-        if((malloc_buffer = (char *)realloc(malloc_buffer, (malloc_buffer_size + packet_size))) == NULL)
+        if((*malloc_buffer = (char *)realloc(*malloc_buffer, *malloc_buffer_size + packet_size)) == NULL)
         {
             cleanup_on_exit();
             exit (EXIT_FAILURE);
         }
 
-        memcpy(malloc_buffer + malloc_buffer_size, buffer, packet_size);
-        malloc_buffer_size += packet_size;
+        memcpy(*malloc_buffer + *malloc_buffer_size, buffer, packet_size);
+        *malloc_buffer_size += packet_size;
     }
 
-    /*if a new line is found write in the file_desc untill the new line character is found*/
-    if (new_line_found == 1)
-    {
-        wr_buffer_len = malloc_buffer_size;
-        write(file_desc, malloc_buffer, malloc_buffer_size);
-        malloc_buffer_size = 0;                 /*reset the static malloc_buffer_size*/
-        free(malloc_buffer);                    /*free the malloced buffer*/
-        malloc_buffer = NULL;
-
-        return wr_buffer_len;
-    }
-
-    return wr_buffer_len;
+    return new_linefound;
 }
+
+
+
+
