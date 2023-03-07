@@ -1,14 +1,15 @@
-CC=$(CROSS_COMPILE)gcc				#by default compiler is gcc is specified aarch64-none-linux-gnu gcc will be appended at the end
-COMPILER_FLAGS=-Wall -Werror -Wextra 				#variable to hold the various flag for cross compiling
+CC?=$(CROSS_COMPILE)gcc				#by default compiler is gcc is specified aarch64-none-linux-gnu gcc will be appended at the end
+CFLAGS?=-g -Wall -Werror -Wextra 				#variable to hold the various flag for cross compiling
+LDFLAGS?=-pthread -lrt
 
 .PHONY: all
 all: aesdsocket
 
 aesdsocket : aesdsocket_o
-	$(CC) $(COMPILER_FLAGS) -o aesdsocket aesdsocket.o	#linking the object file to the executable , with warning error and Wextra flag
+	$(CC) $(CFLAGS) -o aesdsocket aesdsocket.o  $(LDFLAGS) 	#linking the object file to the executable , with warning error and Wextra flag
 
 aesdsocket_o:
-	$(CC) $(COMPILER_FLAGS) -c aesdsocket.c -o aesdsocket.o 	#creating the object file for writer.c and warning erorr and Wextra flag being set
+	$(CC) $(CFLAGS) -c aesdsocket.c -o aesdsocket.o	#creating the object file for writer.c and warning erorr and Wextra flag being set
 	
 .PHONY: clean
 clean:
