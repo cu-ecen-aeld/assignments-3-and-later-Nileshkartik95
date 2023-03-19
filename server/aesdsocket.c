@@ -39,8 +39,9 @@
 
 #define BACKLOG (3)
 #define MAXDATASIZE (1024)
-#define SOCK_FILE_WRITE ("/var/tmp/aesdsocketdata")
 #define TIMESTAMP_SIZE (128)
+#define AELD_CDEV (1)
+
 
 
 /***********************************Global Variable***************************/
@@ -62,13 +63,21 @@ struct client_node_s
     SLIST_ENTRY(client_node_s) entries;
 };
 
+#ifdef AELD_CDEV
+#define SOCK_FILE_WRITE ("/dev/aesdchar")
+#else
+#define SOCK_FILE_WRITE ("/var/tmp/aesdsocketdata")
+#endif
+
 /*****************************Function declaration****************************/
 void *thread_new_connection(void *client_data);
 int read_datasocket_strlocalbuf(int fd_soc_client, char **malloc_wr_buffer, int *malloc_buffer_len);
 int file_read(int fd_wr_file, char **malloc_wr_buffer, int *malloc_buffer_len);
 void cleanup_on_exit();
 void sig_handler();
+#ifndef AELD_CDEV
 void * log_timestamp_write();
+#endif
 
 /*****************************Function definition******************************/
 int main(int argc, char **argv)
@@ -192,8 +201,11 @@ int main(int argc, char **argv)
         cleanup_on_exit();
         return -1;
     }
-    pthread_t time_thread;
+
+	#ifndef AELD_CDEV
+	pthread_t time_thread;
     pthread_create(&time_thread, NULL, log_timestamp_write, NULL);
+	#endif
 
 
     /*super loop to poll on the data received from client*/
@@ -227,7 +239,6 @@ int main(int argc, char **argv)
             }
             else
             {
-
                 pthread_join(client_node->thread_id, NULL);
             }
         }
@@ -237,6 +248,7 @@ int main(int argc, char **argv)
     return ret_status;
 }
 
+#ifndef AELD_CDEV
 void * log_timestamp_write()
 {
     time_t curr_time;
@@ -260,6 +272,7 @@ void * log_timestamp_write()
     }
     return NULL;
 }
+#endif
 
 void *thread_new_connection(void *client_data)
 {
@@ -339,12 +352,6 @@ void *thread_new_connection(void *client_data)
         {
             client_node->malloc_wr_buffer = (char *)realloc(client_node->malloc_wr_buffer, count_byte);
         }
-            /*
-
-        if (client_node->malloc_wr_buffer == NULL)
-        {}
-            ret_status = -1;*/
-
 
         lseek(fd_wr_file, 0, SEEK_SET);
 
@@ -428,6 +435,9 @@ void cleanup_on_exit()
     SLIST_INIT(&client_list_head);
 
     pthread_mutex_destroy(&lock);
+	#ifndef AELD_CDEV
+		pthread_join(time_thread, NULL);
+	#endif
 
     remove(SOCK_FILE_WRITE);
 
@@ -492,7 +502,3 @@ int read_datasocket_strlocalbuf(int fd_soc_client, char **malloc_buffer, int *ma
 
     return new_linefound;
 }
-
-
-
-
