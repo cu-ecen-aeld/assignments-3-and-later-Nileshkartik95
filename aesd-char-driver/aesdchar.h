@@ -25,6 +25,7 @@
 
 struct aesd_dev
 {
+    unsigned long buf_size;
     struct aesd_buffer_entry circle_buff_entry;
     struct aesd_circular_buffer circle_buff;
     struct mutex lock;
